@@ -12,6 +12,8 @@ const userSchema = new mongoose.Schema({
   isFirstLogin: { type: Boolean, default: true },
   resetCode: String,
   resetCodeExpiry: Number,
+  setupToken: String,
+  setupTokenExpiry: Number,
   createdAt: { type: Number, default: () => Date.now() },
 });
 

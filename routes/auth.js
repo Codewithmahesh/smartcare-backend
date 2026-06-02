@@ -185,4 +185,55 @@ router.post('/reset-password', async (req, res) => {
   }
 });
 
+// POST /api/auth/set-password — activate account via invite token
+router.post('/set-password', async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+    if (!token || !newPassword) return res.status(400).json({ error: 'Token and password are required' });
+    if (newPassword.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+
+    const user = await User.findOne({ setupToken: token });
+    if (!user) return res.status(400).json({ code: 'invalid_token', error: 'Invalid or already used setup link' });
+    if (Date.now() > user.setupTokenExpiry) return res.status(400).json({ code: 'token_expired', error: 'This setup link has expired. Ask your admin to resend the invite.' });
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    await User.findByIdAndUpdate(user._id, {
+      passwordHash,
+      setupToken: null,
+      setupTokenExpiry: null,
+      isFirstLogin: false,
+    });
+
+    res.json({ success: true, email: user.email });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/auth/resend-invite — resend setup link (superadmin/hospital_admin)
+router.post('/resend-invite', auth, async (req, res) => {
+  try {
+    const crypto = require('crypto');
+    const { sendSetupInvite } = require('../utils/mailer');
+    const Hospital = require('../models/Hospital');
+    const { userId } = req.body;
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const setupToken = crypto.randomBytes(32).toString('hex');
+    const setupTokenExpiry = Date.now() + 48 * 60 * 60 * 1000;
+    await User.findByIdAndUpdate(user._id, { setupToken, setupTokenExpiry, isFirstLogin: true });
+
+    const hospital = user.hospitalId ? await Hospital.findById(user.hospitalId) : null;
+    const adminUrl = process.env.ADMIN_URL || 'http://localhost:3001';
+    const setupUrl = `${adminUrl}/setup-password?token=${setupToken}`;
+    await sendSetupInvite({ toEmail: user.email, name: user.name, hospitalName: hospital?.name ?? 'SmartCare', setupUrl, role: user.role });
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
