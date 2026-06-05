@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const User = require('../models/User');
 const Hospital = require('../models/Hospital');
 const { auth, requireRole } = require('../middleware/auth');
-const { sendSetupInvite } = require('../utils/mailer');
+const { sendSetupOtp } = require('../utils/mailer');
 
 function fmt(u) {
   return {
@@ -15,7 +15,7 @@ function fmt(u) {
     deptId: u.deptId?.toString(),
     hospitalId: u.hospitalId?.toString(),
     isFirstLogin: u.isFirstLogin,
-    setupPending: !!u.setupToken,
+    setupPending: u.isFirstLogin && !!u.setupOtp,
   };
 }
 
@@ -32,19 +32,18 @@ router.get('/:hospitalId', auth, requireRole('superadmin', 'hospital_admin'), as
   }
 });
 
-// POST /api/staff — create a new staff/admin account (invite flow)
+// POST /api/staff — create a new staff/admin account (OTP invite flow)
 router.post('/', auth, requireRole('superadmin', 'hospital_admin'), async (req, res) => {
   try {
     const { name, email, role, hospitalId, deptId } = req.body;
     const existing = await User.findOne({ email: email.toLowerCase() });
     if (existing) return res.status(409).json({ error: 'Email already registered' });
 
-    // Generate a setup token (no temp password)
-    const setupToken = crypto.randomBytes(32).toString('hex');
-    const setupTokenExpiry = Date.now() + 48 * 60 * 60 * 1000; // 48 hours
+    const setupOtp = String(Math.floor(100000 + Math.random() * 900000));
+    const setupOtpExpiry = Date.now() + 48 * 60 * 60 * 1000; // 48 hours
 
-    // Placeholder hash — account is unusable until they set a password via the setup link
-    const passwordHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10);
+    // Throwaway hash — account unusable until OTP activation (1 round = fast, irrelevant here)
+    const passwordHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 1);
 
     const user = await User.create({
       name,
@@ -54,26 +53,49 @@ router.post('/', auth, requireRole('superadmin', 'hospital_admin'), async (req, 
       hospitalId,
       deptId,
       isFirstLogin: true,
-      setupToken,
-      setupTokenExpiry,
+      setupOtp,
+      setupOtpExpiry,
     });
+
+    const hospital = hospitalId ? await Hospital.findById(hospitalId) : null;
 
     if (role === 'hospital_admin' && hospitalId) {
       await Hospital.findByIdAndUpdate(hospitalId, { adminId: user._id });
     }
 
-    // Send invite email with setup link
-    try {
-      const hospital = await Hospital.findById(hospitalId);
-      const hospitalName = hospital?.name ?? 'your hospital';
-      const adminUrl = process.env.ADMIN_URL || 'http://localhost:3001';
-      const setupUrl = `${adminUrl}/setup-password?token=${setupToken}`;
-      await sendSetupInvite({ toEmail: email, name, hospitalName, setupUrl, role });
-    } catch (mailErr) {
-      console.error('[Mailer] Failed to send invite:', mailErr.message);
-    }
+    const adminUrl = process.env.ADMIN_URL || 'http://localhost:3001';
+    sendSetupOtp({ toEmail: email, name, hospitalName: hospital?.name ?? 'SmartCare', otp: setupOtp, role, adminUrl }).catch(err => {
+      console.error('[Invite OTP email error]', err.message);
+    });
+
+    console.log(`\n[Invite OTP] ${name} <${email}> — OTP: ${setupOtp}\n`);
 
     res.status(201).json(fmt(user));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/staff/:id/resend-otp — resend activation OTP
+router.post('/:id/resend-otp', auth, requireRole('superadmin', 'hospital_admin'), async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.isFirstLogin) return res.status(400).json({ error: 'Account is already activated' });
+
+    const setupOtp = String(Math.floor(100000 + Math.random() * 900000));
+    const setupOtpExpiry = Date.now() + 48 * 60 * 60 * 1000;
+    await User.findByIdAndUpdate(user._id, { setupOtp, setupOtpExpiry });
+
+    const hospital = user.hospitalId ? await Hospital.findById(user.hospitalId) : null;
+    const adminUrl = process.env.ADMIN_URL || 'http://localhost:3001';
+
+    sendSetupOtp({ toEmail: user.email, name: user.name, hospitalName: hospital?.name ?? 'SmartCare', otp: setupOtp, role: user.role, adminUrl }).catch(err => {
+      console.error('[Resend OTP email error]', err.message);
+    });
+
+    console.log(`\n[Resend OTP] ${user.name} <${user.email}> — OTP: ${setupOtp}\n`);
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

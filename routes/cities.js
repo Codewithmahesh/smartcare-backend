@@ -1,5 +1,8 @@
 const router = require('express').Router();
 const City = require('../models/City');
+const Hospital = require('../models/Hospital');
+const Department = require('../models/Department');
+const User = require('../models/User');
 const { auth, requireRole } = require('../middleware/auth');
 
 function fmt(c) {
@@ -37,11 +40,17 @@ router.put('/:id', auth, requireRole('superadmin'), async (req, res) => {
   }
 });
 
-// DELETE /api/cities/:id
+// DELETE /api/cities/:id  — cascades: hospitals → their depts + staff → city
 router.delete('/:id', auth, requireRole('superadmin'), async (req, res) => {
   try {
+    const hospitals = await Hospital.find({ cityId: req.params.id });
+    for (const h of hospitals) {
+      await Department.deleteMany({ hospitalId: h._id });
+      await User.deleteMany({ hospitalId: h._id });
+      await Hospital.findByIdAndDelete(h._id);
+    }
     await City.findByIdAndDelete(req.params.id);
-    res.json({ success: true });
+    res.json({ success: true, deletedHospitals: hospitals.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

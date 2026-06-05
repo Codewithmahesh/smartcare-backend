@@ -14,6 +14,8 @@ const userSchema = new mongoose.Schema({
   resetCodeExpiry: Number,
   setupToken: String,
   setupTokenExpiry: Number,
+  setupOtp: String,
+  setupOtpExpiry: Number,
   createdAt: { type: Number, default: () => Date.now() },
 });
 

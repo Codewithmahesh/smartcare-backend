@@ -3,11 +3,16 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const User = require('./models/User');
 
-const NAME = 'Super Admin';
-const EMAIL = 'admin@smartcare.com';
-const PASSWORD = 'Admin@1234';
-
 async function setup() {
+  const NAME = process.env.SUPERADMIN_NAME;
+  const EMAIL = process.env.SUPERADMIN_EMAIL;
+  const PASSWORD = process.env.SUPERADMIN_PASSWORD;
+
+  if (!NAME || !EMAIL || !PASSWORD) {
+    console.error('Error: SUPERADMIN_NAME, SUPERADMIN_EMAIL, and SUPERADMIN_PASSWORD must be set in .env');
+    process.exit(1);
+  }
+
   await mongoose.connect(process.env.MONGODB_URI);
   console.log('Connected to MongoDB');
 
@@ -18,7 +23,7 @@ async function setup() {
   }
 
   const passwordHash = await bcrypt.hash(PASSWORD, 10);
-  const user = await User.create({ name: NAME, email: EMAIL, passwordHash, role: 'superadmin' });
+  await User.create({ name: NAME, email: EMAIL, passwordHash, role: 'superadmin' });
   console.log('\n✅ Superadmin created!');
   console.log('   Email   :', EMAIL);
   console.log('   Password:', PASSWORD);

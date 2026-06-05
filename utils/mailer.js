@@ -5,22 +5,33 @@ function getTransporter() {
   return nodemailer.createTransport({
     service: 'gmail',
     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+    connectionTimeout: 5000,
+    greetingTimeout: 5000,
+    socketTimeout: 8000,
   });
 }
 
 async function send({ to, subject, html }) {
   const transporter = getTransporter();
   if (!transporter) {
-    console.warn(`[Mailer] EMAIL_USER/EMAIL_PASS not set — skipping email to ${to}`);
+    console.warn(`[Mailer] EMAIL creds not set — skipping send to ${to}`);
     return;
   }
-  await transporter.sendMail({
-    from: `SmartCare <${process.env.EMAIL_USER}>`,
-    to,
-    subject,
-    html,
-  });
-  console.log(`[Mailer] Sent "${subject}" to ${to}`);
+
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('SMTP timeout after 8s')), 8000)
+  );
+
+  try {
+    await Promise.race([
+      transporter.sendMail({ from: `SmartCare <${process.env.EMAIL_USER}>`, to, subject, html }),
+      timeout,
+    ]);
+    console.log(`[Mailer] ✅ Sent "${subject}" → ${to}`);
+  } catch (err) {
+    console.error(`[Mailer] ❌ Failed to send to ${to}: ${err.message}`);
+    console.error('[Mailer] Check EMAIL_USER / EMAIL_PASS in .env — may need a fresh Gmail App Password');
+  }
 }
 
 const BASE = `
@@ -65,6 +76,36 @@ async function sendSetupInvite({ toEmail, name, hospitalName, setupUrl, role }) 
   });
 }
 
+async function sendSetupOtp({ toEmail, name, hospitalName, otp, role, adminUrl }) {
+  const roleLabel = role === 'hospital_admin' ? 'Hospital Administrator' : 'Staff Member';
+  const setupUrl = `${adminUrl || 'http://localhost:3001'}/setup-password`;
+  await send({
+    to: toEmail,
+    subject: `Your SmartCare activation code — ${hospitalName}`,
+    html: `
+      ${BASE}
+      <h2 style="color:#0f172a;font-size:20px;font-weight:800;margin:0 0 8px">Activate your account</h2>
+      <p style="color:#475569;line-height:1.7;margin:0 0 24px">
+        Hi <strong>${name}</strong>, you've been added as a <strong>${roleLabel}</strong>
+        for <strong>${hospitalName}</strong> on SmartCare.
+      </p>
+      <p style="color:#475569;line-height:1.7;margin:0 0 16px">
+        Use this one-time code to activate your account. It expires in <strong>48 hours</strong>.
+      </p>
+      <div style="text-align:center;background:#f8fafc;border-radius:12px;padding:28px;margin:0 0 24px;border:1px solid #e2e8f0">
+        <span style="font-size:42px;font-weight:900;color:#2563eb;letter-spacing:12px">${otp}</span>
+      </div>
+      <p style="color:#475569;line-height:1.7;margin:0 0 16px">
+        Go to the SmartCare Admin Portal to set your password:
+      </p>
+      <a href="${setupUrl}" style="display:inline-block;background:#2563eb;color:#fff;font-weight:700;font-size:14px;padding:13px 28px;border-radius:9px;text-decoration:none;margin-bottom:24px">
+        Set up my account →
+      </a>
+      ${FOOTER}
+    `,
+  });
+}
+
 async function sendPasswordResetEmail({ toEmail, name, code }) {
   await send({
     to: toEmail,
@@ -83,4 +124,4 @@ async function sendPasswordResetEmail({ toEmail, name, code }) {
   });
 }
 
-module.exports = { sendSetupInvite, sendPasswordResetEmail };
+module.exports = { sendSetupInvite, sendSetupOtp, sendPasswordResetEmail };

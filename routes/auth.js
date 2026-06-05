@@ -210,6 +210,27 @@ router.post('/set-password', async (req, res) => {
   }
 });
 
+// POST /api/auth/activate — new admin/staff activates account via OTP
+router.post('/activate', async (req, res) => {
+  try {
+    const { email, otp, newPassword } = req.body;
+    if (!email || !otp || !newPassword) return res.status(400).json({ error: 'Email, OTP and new password are required' });
+    if (newPassword.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) return res.status(404).json({ error: 'No account found with this email' });
+    if (!user.isFirstLogin) return res.status(400).json({ code: 'already_active', error: 'This account is already activated. Please sign in.' });
+    if (!user.setupOtp || user.setupOtp !== otp.trim()) return res.status(400).json({ code: 'invalid_otp', error: 'Invalid activation code. Check your email and try again.' });
+    if (Date.now() > user.setupOtpExpiry) return res.status(400).json({ code: 'otp_expired', error: 'Activation code has expired. Ask your admin to resend the invite.' });
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    await User.findByIdAndUpdate(user._id, { passwordHash, setupOtp: null, setupOtpExpiry: null, isFirstLogin: false });
+    res.json({ success: true, email: user.email });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/auth/resend-invite — resend setup link (superadmin/hospital_admin)
 router.post('/resend-invite', auth, async (req, res) => {
   try {
@@ -228,9 +249,14 @@ router.post('/resend-invite', auth, async (req, res) => {
     const hospital = user.hospitalId ? await Hospital.findById(user.hospitalId) : null;
     const adminUrl = process.env.ADMIN_URL || 'http://localhost:3001';
     const setupUrl = `${adminUrl}/setup-password?token=${setupToken}`;
-    await sendSetupInvite({ toEmail: user.email, name: user.name, hospitalName: hospital?.name ?? 'SmartCare', setupUrl, role: user.role });
 
-    res.json({ success: true });
+    sendSetupInvite({ toEmail: user.email, name: user.name, hospitalName: hospital?.name ?? 'SmartCare', setupUrl, role: user.role }).catch(err => {
+      console.error('[Resend invite email error]', err.message);
+    });
+
+    console.log(`\n[Invite] ${user.name} <${user.email}>\n  Setup URL: ${setupUrl}\n`);
+
+    res.json({ success: true, setupUrl });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

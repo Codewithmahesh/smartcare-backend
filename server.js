@@ -1,4 +1,7 @@
 require('dotenv').config();
+// Local router DNS doesn't support SRV records — use Google DNS for Atlas connection
+const dns = require('dns');
+dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
@@ -20,7 +23,12 @@ app.use('/api/admin', require('./routes/admin'));
 app.get('/health', (_, res) => res.json({ status: 'ok' }));
 
 mongoose
-  .connect(process.env.MONGODB_URI)
+  .connect(process.env.MONGODB_URI, {
+    serverSelectionTimeoutMS: 60000,
+    connectTimeoutMS: 60000,
+    socketTimeoutMS: 60000,
+    family: 4,
+  })
   .then(() => {
     console.log('Connected to MongoDB');
     const port = process.env.PORT || 3000;

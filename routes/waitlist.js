@@ -7,12 +7,15 @@ const { auth, requireRole } = require('../middleware/auth');
 router.post('/:cityId', auth, async (req, res) => {
   try {
     const { name, email, phone } = req.body;
+    const existing = await Waitlist.findOne({ cityId: req.params.cityId, userId: req.user.userId });
     await Waitlist.findOneAndUpdate(
       { cityId: req.params.cityId, userId: req.user.userId },
       { cityId: req.params.cityId, userId: req.user.userId, name, email, phone, joinedAt: Date.now() },
       { upsert: true }
     );
-    await City.findByIdAndUpdate(req.params.cityId, { $inc: { waitlistCount: 1 } });
+    if (!existing) {
+      await City.findByIdAndUpdate(req.params.cityId, { $inc: { waitlistCount: 1 } });
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
