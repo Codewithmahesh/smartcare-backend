@@ -1,5 +1,8 @@
 require('dotenv').config();
+const dns = require('dns');
+dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
 const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
 
 const City = require('./models/City');
 const Hospital = require('./models/Hospital');
@@ -553,13 +556,24 @@ const HOSPITALS = [
   },
 ];
 
+// ─── Seed credentials (printed at end) ───────────────────────────────────────
+
+const SUPERADMIN = { name: 'Super Admin', email: 'superadmin@smartcare.com', password: 'SuperAdmin@123' };
+const ADMIN_PASS  = 'HospAdmin@123';
+const STAFF_PASS  = 'Staff@123';
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function seed() {
-  await mongoose.connect(process.env.MONGODB_URI);
+  await mongoose.connect(process.env.MONGODB_URI, {
+    serverSelectionTimeoutMS: 60000,
+    connectTimeoutMS: 60000,
+    socketTimeoutMS: 60000,
+    family: 4,
+  });
   console.log('Connected to MongoDB\n');
 
-  // Wipe existing data except superadmin
+  // Wipe existing data (preserve existing superadmin if any)
   await City.deleteMany({});
   await Hospital.deleteMany({});
   await Department.deleteMany({});
@@ -567,14 +581,30 @@ async function seed() {
   await User.deleteMany({ role: { $in: ['hospital_admin', 'staff'] } });
   console.log('Cleared old seed data');
 
+  // 0. Superadmin
+  const existingSA = await User.findOne({ role: 'superadmin' });
+  if (!existingSA) {
+    const hash = await bcrypt.hash(SUPERADMIN.password, 10);
+    await User.create({ name: SUPERADMIN.name, email: SUPERADMIN.email, passwordHash: hash, role: 'superadmin', isFirstLogin: false });
+    console.log(`✓ Superadmin created: ${SUPERADMIN.email}\n`);
+  } else {
+    console.log(`✓ Superadmin already exists: ${existingSA.email}\n`);
+  }
+
   // 1. Insert cities
   const cityDocs = await City.insertMany(CITIES);
   const cityMap = {};
   cityDocs.forEach(c => { cityMap[c.name] = c._id; });
-  console.log(`✓ Created ${cityDocs.length} cities (${CITIES.filter(c => c.isLive).length} live, ${CITIES.filter(c => !c.isLive).length} coming soon)\n`);
+  console.log(`✓ Created ${cityDocs.length} cities (${CITIES.filter(c => c.isLive).length} live)\n`);
 
-  // 2. Create hospitals + departments + queues (NO admin users)
-  for (const h of HOSPITALS) {
+  const adminHash = await bcrypt.hash(ADMIN_PASS, 10);
+  const staffHash = await bcrypt.hash(STAFF_PASS, 10);
+
+  const createdAdmins = [];
+
+  // 2. Create hospitals + departments + queues + admin + staff
+  for (let i = 0; i < HOSPITALS.length; i++) {
+    const h = HOSPITALS[i];
     const cityId = cityMap[h.cityKey];
     if (!cityId) { console.warn(`  ✗ City not found: ${h.cityKey}`); continue; }
 
@@ -593,6 +623,8 @@ async function seed() {
       },
     });
 
+    // Departments + queues
+    const deptDocs = [];
     for (const d of h.departments) {
       const dept = await Department.create({
         hospitalId: hospital._id,
@@ -600,6 +632,7 @@ async function seed() {
         specialty: d.specialty,
         doctorName: d.doctorName,
       });
+      deptDocs.push(dept);
       await Queue.create({
         hospitalId: hospital._id,
         deptId: dept._id,
@@ -611,12 +644,49 @@ async function seed() {
       });
     }
 
-    console.log(`  ✓ ${h.name} (${h.cityKey}) — ${h.departments.length} depts, no admin yet`);
+    // Hospital admin — use index for guaranteed-unique email
+    const adminEmail = `admin.h${i + 1}@smartcare.com`;
+    const adminUser = await User.create({
+      name: `${h.name} Admin`,
+      email: adminEmail,
+      passwordHash: adminHash,
+      role: 'hospital_admin',
+      hospitalId: hospital._id,
+      isFirstLogin: false,
+    });
+    await Hospital.findByIdAndUpdate(hospital._id, { adminId: adminUser._id });
+    createdAdmins.push({ hospital: h.name, email: adminEmail });
+
+    // 2 staff members (one per first two departments)
+    for (let s = 0; s < Math.min(2, deptDocs.length); s++) {
+      const dept = deptDocs[s];
+      const staffEmail = `staff.h${i + 1}.${s + 1}@smartcare.com`;
+      const staffName  = dept.doctorName || `Staff ${i + 1}-${s + 1}`;
+      await User.create({
+        name: staffName,
+        email: staffEmail,
+        passwordHash: staffHash,
+        role: 'staff',
+        hospitalId: hospital._id,
+        deptId: dept._id,
+        isFirstLogin: false,
+      });
+    }
+
+    console.log(`  ✓ ${h.name} (${h.cityKey}) — ${h.departments.length} depts · admin: ${adminEmail}`);
   }
 
-  console.log(`\n✅ Seed complete! ${HOSPITALS.length} hospitals created.`);
-  console.log('\nNext step: Go to Admin > Hospitals and use "Add Admin" on each hospital to');
-  console.log('create admin accounts — credentials will be emailed automatically.\n');
+  console.log(`\n✅ Seed complete!`);
+  console.log(`   ${HOSPITALS.length} hospitals · ${HOSPITALS.length * 2} staff · ${HOSPITALS.length} hospital admins\n`);
+
+  console.log('─── Login Credentials ───────────────────────────────────────');
+  const saEmail = existingSA ? existingSA.email : SUPERADMIN.email;
+  console.log(`  Superadmin  : ${saEmail} / ${existingSA ? '(existing password)' : SUPERADMIN.password}`);
+  console.log(`  Hosp admins : see list below / password: ${ADMIN_PASS}`);
+  console.log(`  Staff       : staff1a@smartcare.com … / password: ${STAFF_PASS}`);
+  console.log('─────────────────────────────────────────────────────────────');
+  createdAdmins.forEach(a => console.log(`  ${a.email.padEnd(45)} → ${a.hospital}`));
+  console.log('─────────────────────────────────────────────────────────────\n');
 
   await mongoose.disconnect();
 }
